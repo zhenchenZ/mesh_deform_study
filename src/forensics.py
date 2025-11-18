@@ -5,72 +5,31 @@ from typing import Optional, Dict, Any, Tuple
 
 import numpy as np
 import open3d as o3d
+import trimesh
 from scipy.spatial import cKDTree
 import matplotlib.pyplot as plt
 
-
-# ---------- I/O & basic helpers ----------
-
-def load_mesh(path: str) -> o3d.geometry.TriangleMesh:
-    """
-    Load an OBJ / PLY mesh with Open3D.
-    """
-    mesh = o3d.io.read_triangle_mesh(path)
-    if not mesh.has_vertex_normals():
-        mesh.compute_vertex_normals()
-    if not mesh.has_triangle_normals():
-        mesh.compute_triangle_normals()
-    return mesh
-
-
-def mesh_arrays(mesh: o3d.geometry.TriangleMesh) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Convenience: return (V, F) numpy arrays.
-    """
-    V = np.asarray(mesh.vertices)
-    F = np.asarray(mesh.triangles)
-    return V, F
+from src.mesh_io import mesh_arrays, normalize_mesh_with_transform
 
 
 # ---------- Sampling ----------
 
-def sample_points_uniform(
-    mesh: o3d.geometry.TriangleMesh,
+def sample_points_uniform_trimesh(
+    mesh_o3d: o3d.geometry.TriangleMesh,
     n_points: int = 50_000,
-    return_face_indices: bool = True,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+):
     """
-    Uniformly sample points on the mesh surface (area-weighted).
-    Uses Open3D built-in sampling.
+    Use trimesh internally because it returns face indices.
     """
-    # Open3D doesn't expose face indices for sampled points,
-    # so we re-implement sampling using numpy.
-    V, F = mesh_arrays(mesh)
+    # Convert Open3D mesh to Trimesh
+    V = np.asarray(mesh_o3d.vertices)
+    F = np.asarray(mesh_o3d.triangles)
+    tm = trimesh.Trimesh(vertices=V, faces=F, process=False)
 
-    tri_verts = V[F]                        # (nF, 3, 3)
-    # Compute triangle areas
-    vec0 = tri_verts[:, 1] - tri_verts[:, 0]
-    vec1 = tri_verts[:, 2] - tri_verts[:, 0]
-    tri_areas = 0.5 * np.linalg.norm(np.cross(vec0, vec1), axis=1)
-    area_cdf = np.cumsum(tri_areas)
-    area_cdf /= area_cdf[-1]
+    # Sample uniformly with area weighting
+    points, face_idx = tm.sample(n_points, return_index=True)
 
-    # Sample face indices according to area
-    rnd = np.random.rand(n_points)
-    face_indices = np.searchsorted(area_cdf, rnd)
-
-    # Barycentric coords
-    r1 = np.sqrt(np.random.rand(n_points))
-    r2 = np.random.rand(n_points)
-    a = 1.0 - r1
-    b = r1 * (1.0 - r2)
-    c = r1 * r2
-    tri = tri_verts[face_indices]          # (n_points, 3, 3)
-    pts = a[:, None] * tri[:, 0] + b[:, None] * tri[:, 1] + c[:, None] * tri[:, 2]
-
-    if return_face_indices:
-        return pts, face_indices
-    return pts, None
+    return points, face_idx
 
 
 # ---------- Triangle & edge stats ----------
@@ -80,7 +39,8 @@ def compute_edge_data(mesh: o3d.geometry.TriangleMesh):
     Build unique edges and their incident faces.
     Returns:
         edges: (nE, 2) int
-        edge_face_indices: list of lists of face indices
+        edge_face_indices: list of lists of face indices, length nE
+                           If edge_face_indices[i] = [f0, f1], then edges[i] is shared by faces f0 and f1.
     """
     _, F = mesh_arrays(mesh)
 
@@ -88,13 +48,17 @@ def compute_edge_data(mesh: o3d.geometry.TriangleMesh):
     e01 = F[:, [0, 1]]
     e12 = F[:, [1, 2]]
     e20 = F[:, [2, 0]]
-    edges = np.vstack([e01, e12, e20])
-    face_ids = np.repeat(np.arange(F.shape[0]), 3)
+    edges = np.vstack([e01, e12, e20])             # shape (3*number_of_faces, 2)
+    face_ids = np.repeat(np.arange(F.shape[0]), 3) # shape (3*number_of_faces), track which face each edge in `edges` comes from
+                                                   # e.g. if we have 2 faces, then face_ids = [0,0,0,1,1,1] for 6 edges
+                                                   # first 3 edges from face 0, next 3 from face 1
 
     # sort endpoints so undirected edges deduplicate
-    edges_sorted = np.sort(edges, axis=1)
-    uniq_edges, inv = np.unique(edges_sorted, axis=0, return_inverse=True)
-
+    edges_sorted = np.sort(edges, axis=1)                                       # in this way, (i,j) becomes (j,i) if j<i, all edges are undirected
+    uniq_edges, inv = np.unique(edges_sorted, axis=0, return_inverse=True)      # dedup the edges
+                                                                                # inv, shape (n_edges_sorted=num_faces*3,)
+                                                                                # it tells for each row in edges_sorted, which row in uniq_edges it maps to
+                                                                                # recall that edges_sorted[0:3] are edges from face 0, edges_sorted[3:6] are from face 1, etc.
     edge_face_indices = [[] for _ in range(uniq_edges.shape[0])]
     for i_edge, f_idx in zip(inv, face_ids):
         edge_face_indices[i_edge].append(int(f_idx))
@@ -263,13 +227,16 @@ def analyze_mesh(
     """
     Run the full forensics pass on a single mesh.
     """
+    # diagonal normalization
+    mesh, _, _ = normalize_mesh_with_transform(mesh)
+
     V, F = mesh_arrays(mesh)
     if face_labels is not None:
         assert face_labels.shape[0] == F.shape[0], \
             "face_labels must have length = n_faces"
 
     # sampling
-    pts, face_idx = sample_points_uniform(mesh, n_points=n_samples, return_face_indices=True)
+    pts, face_idx = sample_points_uniform_trimesh(mesh, n_points=n_samples, return_face_indices=True)
 
     # basic stats
     edges_len = edge_lengths(mesh)
@@ -324,6 +291,9 @@ def quick_plots(mesh: o3d.geometry.TriangleMesh):
     Quick-and-dirty visual inspection: histograms of edge length,
     triangle AR, curvature, dihedral.
     """
+
+    mesh, _, _ = normalize_mesh_with_transform(mesh)
+
     edges_len = edge_lengths(mesh)
     tri_ar = triangle_aspect_ratios(mesh)
     curv_v = vertex_curvatures(mesh)

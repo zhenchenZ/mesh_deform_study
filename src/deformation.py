@@ -3,9 +3,12 @@
 from typing import Optional
 
 import numpy as np
+from copy import deepcopy
 import open3d as o3d
 from scipy.sparse import coo_matrix, diags
 from scipy.sparse.linalg import eigsh
+
+from src.mesh_io import normalize_mesh_with_transform
 
 
 def _mesh_arrays(mesh: o3d.geometry.TriangleMesh):
@@ -17,6 +20,9 @@ def _mesh_arrays(mesh: o3d.geometry.TriangleMesh):
 def build_uniform_laplacian(mesh: o3d.geometry.TriangleMesh):
     """
     Build a simple graph Laplacian L = D - A with uniform weights.
+
+    Returns:
+        L: sparse matrix of shape (n, n) where n is number of vertices
     """
     V, F = _mesh_arrays(mesh)
     n = V.shape[0]
@@ -58,22 +64,26 @@ def spectral_displacement(
 
     V, F = _mesh_arrays(mesh)
     n = V.shape[0]
-    L = build_uniform_laplacian(mesh)
+    L = build_uniform_laplacian(mesh) # (nV, nV)
 
     k = min(num_eig + 1, n - 1)  # +1 to drop the constant mode
     # smallest eigenvalues (smoothest)
-    eigvals, eigvecs = eigsh(L, k=k, which="SM")
-    # drop constant eigenvector (eigval ~ 0)
-    idx_sorted = np.argsort(eigvals)
-    eigvals = eigvals[idx_sorted]
-    eigvecs = eigvecs[:, idx_sorted]
-    eigvecs = eigvecs[:, 1:num_eig + 1]  # skip first
+    eigvals, eigvecs = eigsh(L, k=k, which="SM") # find k smallest eigenvalues and eigenvectors of the Laplacian L
+                                                 # i.e. solve L * v = lambda * v for the smallest lambda(s)
+                                                 # each eigenvec of shape (nV, ) is a scalar function defined on at all vertices
+                                                 # (num_eig + 1, ), (nV, num_eig + 1)
 
-    coeffs = random_state.randn(eigvecs.shape[1])
-    field = eigvecs @ coeffs
+    # drop constant eigenvector (eigval ~ 0)
+    idx_sorted = np.argsort(eigvals)     # (num_eig + 1, )
+    eigvals = eigvals[idx_sorted]        # (num_eig + 1, )
+    eigvecs = eigvecs[:, idx_sorted]     # (nV, num_eig + 1)
+    eigvecs = eigvecs[:, 1:num_eig + 1]  # skip first, shape (nV, num_eig)
+
+    coeffs = random_state.randn(eigvecs.shape[1]) # (num_eig, )
+    field = eigvecs @ coeffs                      # (nV, ), this operation combines eigenvectors linearly, i.e. a weighted sum
     field = (field - field.mean()) / (field.std() + 1e-8)
 
-    mesh = mesh.clone()
+    mesh = deepcopy(mesh)
     mesh.compute_vertex_normals()
     normals = np.asarray(mesh.vertex_normals)
     disp = amplitude * field[:, None] * normals
@@ -89,6 +99,8 @@ def perturb_planes(
     face_labels: np.ndarray,
     plane_label: int = 0,
     amplitude: float = 0.01,
+    freq_u: int = 1,
+    freq_v: int = 1,
 ) -> o3d.geometry.TriangleMesh:
     """
     Add gentle warping / bumps to planar regions.
@@ -100,7 +112,7 @@ def perturb_planes(
     """
     V, F = _mesh_arrays(mesh)
     assert face_labels.shape[0] == F.shape[0]
-    mesh = mesh.clone()
+    mesh = deepcopy(mesh)
     mesh.compute_vertex_normals()
     normals = np.asarray(mesh.vertex_normals)
 
@@ -116,16 +128,16 @@ def perturb_planes(
     centroid = verts_plane.mean(axis=0)
     X = verts_plane - centroid
     u, s, vh = np.linalg.svd(X, full_matrices=False)
-    basis = vh  # rows: principal directions
-    # n = basis[2]  # but we already have vertex normals; use them for per-vertex displacement
-    uv = X @ basis[:2].T  # (n_plane_verts, 2)
+    basis = vh                  # rows: principal directions
+    # n = basis[2]              # but we already have vertex normals; use them for per-vertex displacement
+    uv = X @ basis[:2].T        # (n_plane_verts, 2), this gives coordinates in local plane basis
 
     u_coord = uv[:, 0]
     v_coord = uv[:, 1]
     u_norm = (u_coord - u_coord.min()) / (u_coord.ptp() + 1e-8)
     v_norm = (v_coord - v_coord.min()) / (v_coord.ptp() + 1e-8)
 
-    height = amplitude * np.sin(2 * np.pi * u_norm) * np.sin(2 * np.pi * v_norm)
+    height = amplitude * np.sin(freq_u * 2 * np.pi * u_norm) * np.sin(freq_v * 2 * np.pi * v_norm)
 
     # apply along normals for these vertices
     idx_plane_verts = np.where(vert_mask)[0]
@@ -154,7 +166,7 @@ def perturb_cylinders(
     """
     V, F = _mesh_arrays(mesh)
     assert face_labels.shape[0] == F.shape[0]
-    mesh = mesh.clone()
+    mesh = deepcopy(mesh)
 
     cyl_faces = np.where(face_labels == cylinder_label)[0]
     if len(cyl_faces) == 0:
@@ -225,7 +237,7 @@ def jitter_vertices(
     """
     Small random vertex noise (absolute scale relative to bbox diagonal).
     """
-    mesh = mesh.clone()
+    mesh = deepcopy(mesh)
     V, _ = _mesh_arrays(mesh)
     bb = mesh.get_axis_aligned_bounding_box()
     diag = np.linalg.norm(bb.get_max_bound() - bb.get_min_bound())
@@ -248,10 +260,13 @@ def trellis_like_deform(
 ) -> o3d.geometry.TriangleMesh:
     """
     Full pipeline:
+      0) normalize mesh,
       1) global smooth displacement,
       2) primitive-aware local perturbations,
       3) tessellation tweaks (subdivision + jitter).
     """
+    mesh, _, _ = normalize_mesh_with_transform(mesh)
+
     out = spectral_displacement(mesh, amplitude=spectral_amp)
 
     if face_labels is not None:
