@@ -53,6 +53,7 @@ def spectral_displacement(
     num_eig: int = 8,
     amplitude: float = 0.01,
     random_state: Optional[np.random.RandomState] = None,
+    debug: bool = False,
 ) -> o3d.geometry.TriangleMesh:
     """
     Low-frequency smooth deformation using Laplacian eigenfunctions.
@@ -61,17 +62,27 @@ def spectral_displacement(
     """
     if random_state is None:
         random_state = np.random.RandomState()
+    if debug:
+        payload = {}
 
     V, F = _mesh_arrays(mesh)
     n = V.shape[0]
+    if debug: print(f'[spectral_displacement] nV: {n}, num_eig: {num_eig}')
     L = build_uniform_laplacian(mesh) # (nV, nV)
+    if debug: print(f'[spectral_displacement] L: {L.shape}')
 
     k = min(num_eig + 1, n - 1)  # +1 to drop the constant mode
     # smallest eigenvalues (smoothest)
+    if debug:
+        from time import time
+        t0 = time()
+        print(f'[spectral_displacement] Computing {k} eigenpairs...')
     eigvals, eigvecs = eigsh(L, k=k, which="SM") # find k smallest eigenvalues and eigenvectors of the Laplacian L
                                                  # i.e. solve L * v = lambda * v for the smallest lambda(s)
                                                  # each eigenvec of shape (nV, ) is a scalar function defined on at all vertices
                                                  # (num_eig + 1, ), (nV, num_eig + 1)
+    if debug:
+        print(f'[spectral_displacement] Done in {time() - t0:.2f} sec')    
 
     # drop constant eigenvector (eigval ~ 0)
     idx_sorted = np.argsort(eigvals)     # (num_eig + 1, )
@@ -81,15 +92,30 @@ def spectral_displacement(
 
     coeffs = random_state.randn(eigvecs.shape[1]) # (num_eig, )
     field = eigvecs @ coeffs                      # (nV, ), this operation combines eigenvectors linearly, i.e. a weighted sum
+    if debug:
+        payload['coeffs'] = coeffs
+        payload['unnormalized_field'] = field
+
     field = (field - field.mean()) / (field.std() + 1e-8)
+    if debug:
+        payload['normalized_field'] = field
 
     mesh = deepcopy(mesh)
     mesh.compute_vertex_normals()
     normals = np.asarray(mesh.vertex_normals)
     disp = amplitude * field[:, None] * normals
     V_new = V + disp
+    
+    if debug:
+        payload['disp_amp'] = amplitude * field
+        payload['disp'] = disp
+    
     mesh.vertices = o3d.utility.Vector3dVector(V_new)
-    return mesh
+
+    if debug:
+        return mesh, payload
+    else:
+        return mesh
 
 
 # ---------- Primitive-aware perturbations ----------

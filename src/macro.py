@@ -36,7 +36,7 @@ PRIMITIVE_NAME_TO_COLOR = {
     "unknown":  UNKNOWN_COLOR
 }
 
-PRIMITIVE_COLOR_TO_NAME = {v: k for k, v in PRIMITIVE_NAME_TO_COLOR.items()}
+PRIMITIVE_COLOR_TO_NAME = {tuple(v): k for k, v in PRIMITIVE_NAME_TO_COLOR.items()}
 
 def prim_id_to_name(prim_id):
     return PRIMITIVE_LIST[prim_id]

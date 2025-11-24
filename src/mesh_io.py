@@ -4,6 +4,8 @@ import numpy as np
 from copy import deepcopy
 import open3d as o3d
 import trimesh
+import pymeshlab as ml
+
 
 # ---------- I/O & basic helpers ----------
 
@@ -16,6 +18,55 @@ def load_mesh(path: str) -> o3d.geometry.TriangleMesh:
         mesh.compute_vertex_normals()
     if not mesh.has_triangle_normals():
         mesh.compute_triangle_normals()
+    return mesh
+
+
+def o3d_to_pymeshlab(o3d_mesh: o3d.geometry.TriangleMesh) -> ml.MeshSet:
+    # Get numpy arrays
+    V = np.asarray(o3d_mesh.vertices, dtype=np.float64)
+    F = np.asarray(o3d_mesh.triangles, dtype=np.int32)
+
+    ms = ml.MeshSet()
+    m = ml.Mesh(vertex_matrix=V, face_matrix=F)
+    ms.add_mesh(m, "from_open3d")
+    return ms
+
+
+def pymeshlab_to_o3d(ms: ml.MeshSet, index: int = None) -> o3d.geometry.TriangleMesh:
+    """
+    Convert a PyMeshLab MeshSet (or one mesh inside) to an Open3D TriangleMesh.
+
+    Parameters
+    ----------
+    ms : pymeshlab.MeshSet
+        The MeshSet containing your mesh(es).
+    index : int or None
+        Which mesh to extract. None = current mesh.
+
+    Returns
+    -------
+    o3d.geometry.TriangleMesh
+        The corresponding Open3D mesh.
+    """
+    if index is None:
+        m = ms.current_mesh()
+    else:
+        m = ms.mesh(index)
+
+    # Extract V, F as numpy
+    V = m.vertex_matrix().astype(np.float64)
+    F = m.face_matrix().astype(np.int32)
+
+    # Create Open3D mesh
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(V)
+    mesh.triangles = o3d.utility.Vector3iVector(F)
+
+    # Compute normals (PyMeshLab may not store them consistently)
+    if V.size > 0 and F.size > 0:
+        mesh.compute_vertex_normals()
+        mesh.compute_triangle_normals()
+
     return mesh
 
 
