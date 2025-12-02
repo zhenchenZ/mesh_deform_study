@@ -129,3 +129,24 @@ def denormalize_mesh(mesh_norm, center, diag):
     mesh.vertices = o3d.utility.Vector3dVector(V_denorm)
     mesh.compute_vertex_normals()
     return mesh
+
+
+def bbox_normalize_points(
+    points: np.ndarray,
+    desired_scale: float,
+) -> np.ndarray:
+    """
+    Normalize points to fit in a bbox of size desired_scale, centered at origin.
+    points: (N,3)
+    bbox_min, bbox_max: (3,)
+    returns normalized points: (N,3)
+    """
+    assert points.ndim == 2 and points.shape[1] == 3
+    bbmin = points.min(0)
+    bbmax = points.max(0)
+    center = (bbmin + bbmax) * 0.5
+    scale  = desired_scale / ((bbmax - bbmin).max() + 1e-12)
+    
+    return (points - center) * scale
+    
+

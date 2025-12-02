@@ -2,6 +2,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+GT_EXP_DIR = Path("data/gt_meshes/20251024_092559-gt_meshes-02-pipeline_LN_encoderFrozen")
+GEN_EXP_DIR = Path("data/gen_meshes/20251113_104750-gen_meshes-06-pipeline_85kredundant")
+
 def print_tensor(x, name=''):
 	try:
 		print(f'{name:20} : {x.shape}, min : {x.min():.3f}, max : {x.max():.3f}, mean : {x.mean():.3f}, std : {x.std():.3f}')
@@ -33,7 +36,7 @@ def get_render(asset_id, render_dir: Path = None) -> Image:
 	Load the render image for a given asset ID.
 	"""
 	if render_dir is None:
-		render_dir = Path('./data/gt_meshes/20251114_134358-gt_meshes-07-pipeline_65k/renders')
+		render_dir = Path('data/gen_meshes/20251113_104750-gen_meshes-06-pipeline_85kredundant/renders')
 		if not render_dir.exists():
 			raise FileNotFoundError(f'The default render directory not found: {render_dir}')
 		
@@ -55,22 +58,13 @@ def get_prim_mesh_path(asset_id, version: str, exp_name: str = None):
 	"""
 	# determine data directory
 	if version.lower() == 'gt':
-		data_dir = Path('./data/gt_meshes')
+		exp_dir = GT_EXP_DIR
 	elif version.lower() == 'gen':
-		data_dir = Path('./data/gen_meshes')
+		exp_dir = GEN_EXP_DIR
 	else:
 		raise ValueError("version must be 'Gen' or 'GT'")
-	if not data_dir.exists():
-		raise FileNotFoundError(f'The data directory not found: {data_dir}. Please structure the data folder as follows: ./data/gt_meshes or ./data/gen_meshes depending on the version.')
-
-	# determine experiment directory
-	n_exps = len(list(data_dir.iterdir()))
-	if n_exps > 1 and exp_name is None:
-		raise ValueError(f'Multiple experiment directories found in {data_dir}. Please specify exp_name.')
-	if exp_name is not None:
-		exp_dir = data_dir / exp_name
-	else:
-		exp_dir = next(data_dir.iterdir())
+	if not exp_dir.exists():
+		raise FileNotFoundError(f'The data directory not found: {exp_dir}. Please structure the data folder as follows: ./data/gt_meshes or ./data/gen_meshes depending on the version.')
 	
 	# get the folder that contains segmented meshes
 	mesh_dir = exp_dir / 'segmented_meshes'

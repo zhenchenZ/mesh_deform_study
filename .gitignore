@@ -214,3 +214,5 @@ logs/
 
 *.ply
 *.ini
+*.npz
+*.obj
